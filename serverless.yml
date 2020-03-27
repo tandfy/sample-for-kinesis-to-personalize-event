@@ -1,0 +1,162 @@
+org: tandfy
+app: kinesis-to-personalize-event
+
+service:
+  name: kinesis-to-personalize-event
+
+plugins:
+  - serverless-dotenv-plugin
+
+provider:
+  name: aws
+  runtime: python3.8
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'ap-northeast-1'}
+
+package:
+  exclude:
+    - ./**
+  include:
+    - ./handler.py
+
+functions:
+  putEventsFunction:
+    handler: handler.handler
+    dependsOn:
+      - eventStream
+      - putEventsFunctionRole
+    memorySize: 128
+    timeout: 30
+    role: putEventsFunctionRole
+    environment:
+      TRACKING_ID: ${env:TRACKING_ID}
+    events:
+      - stream:
+          type: kinesis
+          arn:
+            Fn::GetAtt:
+              - eventStream
+              - Arn
+          batchSize: 100
+          batchWindow: 1
+          startingPosition: TRIM_HORIZON
+          enabled: true
+          bisectBatchOnFunctionError: true
+          maximumRetryAttempts: 3
+
+resources:
+  Resources:
+    eventsBucket:
+      Type: AWS::S3::Bucket
+    eventStream:
+      Type: AWS::Kinesis::Stream
+      Properties:
+        ShardCount: 1
+    savingEventsFirehose:
+      Type: AWS::KinesisFirehose::DeliveryStream
+      DependsOn:
+        - eventsBucket
+        - eventStream
+        - savingEventsFirehoseRole
+      Properties:
+        DeliveryStreamType: KinesisStreamAsSource
+        KinesisStreamSourceConfiguration:
+          KinesisStreamARN:
+            Fn::GetAtt:
+              - eventStream
+              - Arn
+          RoleARN:
+            Fn::GetAtt:
+              - savingEventsFirehoseRole
+              - Arn
+        S3DestinationConfiguration:
+          BucketARN:
+            Fn::GetAtt:
+              - eventsBucket
+              - Arn
+          BufferingHints:
+            IntervalInSeconds: 300
+            SizeInMBs: 64
+          CompressionFormat: GZIP
+          RoleARN:
+            Fn::GetAtt:
+              - savingEventsFirehoseRole
+              - Arn
+    savingEventsFirehoseRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: firehose.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: savingEventsFirehosePolicy
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - s3:Put*
+                    - kinesis:DescribeStream
+                  Resource:
+                    - Fn::GetAtt:
+                        - eventStream
+                        - Arn
+                - Effect: Allow
+                  Action:
+                    - kinesis:Get*
+                    - kinesis:DescribeStream
+                  Resource:
+                    - Fn::GetAtt:
+                        - eventStream
+                        - Arn
+                - Effect: Allow
+                  Action:
+                    - s3:AbortMultipartUpload
+                    - s3:GetBucketLocation
+                    - s3:GetObject
+                    - s3:ListBucket
+                    - s3:ListBucketMultipartUploads
+                    - s3:PutObject
+                  Resource:
+                    - Fn::GetAtt:
+                        - eventsBucket
+                        - Arn
+                    - Fn::Join:
+                        - ""
+                        - - "arn:aws:s3:::"
+                          - Ref: eventsBucket
+                          - "/*"
+    putEventsFunctionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: personalizeEventsPolicy
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - personalize:PutEvents
+                  Resource:
+                    - "*"
+                - Effect: Allow
+                  Action:
+                    - kinesis:Get*
+                    - kinesis:DescribeStream
+                  Resource:
+                    - Fn::GetAtt:
+                        - eventStream
+                        - Arn
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
