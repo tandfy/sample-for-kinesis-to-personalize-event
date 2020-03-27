@@ -4,9 +4,6 @@ app: kinesis-to-personalize-event
 service:
   name: kinesis-to-personalize-event
 
-plugins:
-  - serverless-dotenv-plugin
-
 provider:
   name: aws
   runtime: python3.8
